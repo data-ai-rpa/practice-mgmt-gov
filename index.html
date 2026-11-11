@@ -88,8 +88,22 @@ function currentActor(){const u=currentUser||{},p=currentProfile||{};return {uid
 function actorLabel(a){return a&&([a.name,a.email].filter(Boolean).join(" · ")||a.uid||"Non disponibile")}
 
 function normManager(v){return String(v||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim()}
-function managerAliases(){const p=currentProfile||{};return [p.managerName,p.fullName,p.displayName,p.name,p.nome,[p.nome,p.cognome].filter(Boolean).join(" "),p.username,p.email?String(p.email).split("@")[0]:""].map(normManager).filter(Boolean)}
-function isMyPerson(p){if(isAdmin())return true;const aliases=managerAliases();const candidates=[p.managerName];return candidates.map(normManager).filter(Boolean).some(c=>aliases.some(a=>c===a||c.includes(a)||a.includes(c)))}
+function managerAliases(){
+ const p=currentProfile||{};
+ const aliases=[p.managerName,p.fullName,p.displayName,p.name,p.nome,[p.nome,p.cognome].filter(Boolean).join(" "),p.username,p.email?String(p.email).split("@")[0]:""];
+ // L'utente Firebase viene collegato alla sua anagrafica Staffing tramite email.
+ const email=String(p.email||currentUser?.email||"").trim().toLowerCase();
+ const ownResource=staffResources.find(r=>r&&email&&String(r.email||"").trim().toLowerCase()===email);
+ if(ownResource)aliases.push(ownResource.nome,ownResource.name);
+ return [...new Set(aliases.map(normManager).filter(Boolean))];
+}
+function isMyPerson(person){
+ if(isAdmin())return true;
+ const aliases=managerAliases();
+ const manager=normManager(person.managerName);
+ if(!manager)return false;
+ return aliases.some(alias=>manager===alias||manager.includes(alias)||alias.includes(manager));
+}
 function visiblePeople(){return people.filter(isMyPerson)}
 function applyRoleUI(){const admin=isAdmin();document.querySelectorAll('[data-page="resources"],[data-page="settings"]').forEach(b=>b.classList.toggle("hidden",!admin));["addPersonA","addPersonB","deleteAllSessions","addSession","sessionsCsv"].forEach(id=>{const el=$(id);if(el)el.closest("button,label")?.classList.toggle("hidden",!admin)});}
 function stopRealtimeSync(){realtimeUnsubs.forEach(unsub=>{try{unsub()}catch(_){}});realtimeUnsubs=[]}
@@ -128,7 +142,7 @@ function startRealtimeSync(){
   realtimeUnsubs.push(unsub);
  });
 }
-async function load(){if(demo)return render();try{const [p,s,i,r]=await Promise.all([fb.get(fb.ref(db,"o2o/people")),fb.get(fb.ref(db,"o2o/meetings")),fb.get(fb.ref(db,"o2o/interviews")),fb.get(fb.ref(db,"data/os_risorse_v1"))]);people=Object.entries(p.val()||{}).map(([id,v])=>({id,...v}));sessions=Object.entries(s.val()||{}).map(([id,v])=>({id,...v}));interviews=Object.entries(i.val()||{}).map(([id,v])=>({id,...v}));staffResources=Array.isArray(r.val())?r.val().filter(Boolean):[];if(!isAdmin()){people=people.filter(isMyPerson);const ids=new Set(people.map(x=>x.id));sessions=sessions.filter(x=>ids.has(x.personId));interviews=interviews.filter(x=>ids.has(x.personId))}render();if(!isAdmin()&&!people.length)msg("Nessun collaboratore associato: verifica che managerName/fullName/username nel profilo Firebase corrisponda al campo Responsabile funzionale in Staffing.")}catch(e){msg("Errore lettura dati: "+e.message)}}
+async function load(){if(demo)return render();try{const [p,s,i,r]=await Promise.all([fb.get(fb.ref(db,"o2o/people")),fb.get(fb.ref(db,"o2o/meetings")),fb.get(fb.ref(db,"o2o/interviews")),fb.get(fb.ref(db,"data/os_risorse_v1"))]);people=Object.entries(p.val()||{}).map(([id,v])=>({id,...v}));sessions=Object.entries(s.val()||{}).map(([id,v])=>({id,...v}));interviews=Object.entries(i.val()||{}).map(([id,v])=>({id,...v}));staffResources=Array.isArray(r.val())?r.val().filter(Boolean):[];if(!isAdmin()){people=people.filter(isMyPerson);const ids=new Set(people.map(x=>x.id));sessions=sessions.filter(x=>ids.has(x.personId));interviews=interviews.filter(x=>ids.has(x.personId))}render();if(!isAdmin()&&!people.length)msg("Nessun collaboratore associato: verifica che l’email del profilo Firebase corrisponda all’email della risorsa Staffing del responsabile e che il suo nome corrisponda al campo Responsabile funzionale.")}catch(e){msg("Errore lettura dati: "+e.message)}}
 async function save(coll,obj,id){if(!isAdmin()&&coll==="people")throw Error("Solo l’amministratore può modificare l’anagrafica.");if(!isAdmin()&&coll==="sessions"&&!people.some(p=>p.id===obj.personId))throw Error("Non puoi modificare incontri fuori dal tuo perimetro.");if(demo){const a=coll==="people"?people:sessions;if(id){const i=a.findIndex(x=>x.id===id);if(i>=0)a[i]={...obj,id}}else a.push({...obj,id:"demo"+Date.now()});render();return}if(!db)throw Error("Firebase non configurato");const path="o2o/"+(coll==="people"?"people":"meetings");if(id)await fb.update(fb.ref(db,path+"/"+id),obj);else{const newRef=fb.push(fb.ref(db,path));await fb.set(newRef,obj)}await load()}
 async function deleteSession(id){const s=sessions.find(x=>x.id===id);if(!s)return;if(!confirm(`Vuoi eliminare definitivamente l'incontro di ${s.personName||"questa persona"} del ${fmt(s.date)} alle ${s.time||""}?`))return;try{if(demo){sessions=sessions.filter(x=>x.id!==id);render()}else{if(!db)throw Error("Firebase non configurato");await fb.remove(fb.ref(db,"o2o/meetings/"+id));await load()}$("modalRoot").innerHTML="";msg("Incontro eliminato.")}catch(e){msg("Eliminazione non riuscita: "+e.message)}}
 async function deleteAllSessions(){if(!sessions.length){msg("Non ci sono incontri da eliminare.");return}if(!confirm(`ATTENZIONE: stai per eliminare tutti i ${sessions.length} incontri presenti nel portale, inclusi quelli completati. Persone e storico colloqui resteranno invariati. Continuare?`))return;const token=prompt('Per confermare definitivamente, scrivi ELIMINA');if(token!=="ELIMINA"){msg("Operazione annullata.");return}try{if(demo){sessions=[];render()}else{if(!db)throw Error("Firebase non configurato");await fb.remove(fb.ref(db,"o2o/meetings"));await load()}$("modalRoot").innerHTML="";msg("Eliminati tutti gli incontri. Anagrafiche e storico colloqui sono stati mantenuti.")}catch(e){msg("Eliminazione non riuscita: "+e.message)}}
